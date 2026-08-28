@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
   MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -23,6 +26,7 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
           components: rustfmt, clippy
 
       - name: Rust cache
@@ -37,16 +41,41 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Build release binaries
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
 
-      - name: Package build artifact
+      - name: Package release archives & Universal binary
         if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
         run: |
-          mkdir -p dist
-          cp target/release/wuspotify-muter dist/
-          tar -czf dist/wuspotify-muter-macos-latest.tar.gz -C dist wuspotify-muter
-          cd dist && shasum -a 256 wuspotify-muter-macos-latest.tar.gz > wuspotify-muter-macos-latest.tar.gz.sha256
+          mkdir -p dist/arm64 dist/x86_64 dist/universal dist/release_assets
+
+          # Copy individual architecture binaries
+          cp target/aarch64-apple-darwin/release/wuspotify-muter dist/arm64/
+          cp target/x86_64-apple-darwin/release/wuspotify-muter dist/x86_64/
+
+          # Combine into a Universal macOS binary via lipo
+          lipo -create \
+            -output dist/universal/wuspotify-muter \
+            dist/arm64/wuspotify-muter \
+            dist/x86_64/wuspotify-muter
+
+          # Create tar.gz archives
+          tar -czf "dist/release_assets/wuspotify-muter-latest-macos-arm64.tar.gz" -C dist/arm64 wuspotify-muter
+          tar -czf "dist/release_assets/wuspotify-muter-latest-macos-x86_64.tar.gz" -C dist/x86_64 wuspotify-muter
+          tar -czf "dist/release_assets/wuspotify-muter-latest-macos-universal.tar.gz" -C dist/universal wuspotify-muter
+
+          # Generate SHA256 checksums
+          cd dist/release_assets
+          for file in *.tar.gz; do
+            shasum -a 256 "$file" > "${file}.sha256"
+          done
+          shasum -a 256 *.tar.gz > SHA256SUMS.txt
+
+          # Render release description
+          cd ../..
+          sed "s/TAG_NAME/latest/g" .github/RELEASE_TEMPLATE.md > dist/release_body.md
 
       - name: Upload latest build artifact
         if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
@@ -54,6 +83,18 @@ jobs:
         with:
           name: wuspotify-muter-macos-latest
           path: |
-            dist/wuspotify-muter-macos-latest.tar.gz
-            dist/wuspotify-muter-macos-latest.tar.gz.sha256
+            dist/release_assets/*
           retention-days: 30
+
+      - name: Publish / Update 'latest' Pre-Release
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build (main)
+          target_commitish: ${{ github.sha }}
+          body_path: dist/release_body.md
+          files: dist/release_assets/*
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
