@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  test-and-build:
+    name: Test and Build (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package build artifact
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p dist
+          cp target/release/wuspotify-muter dist/
+          tar -czf dist/wuspotify-muter-macos-latest.tar.gz -C dist wuspotify-muter
+          cd dist && shasum -a 256 wuspotify-muter-macos-latest.tar.gz > wuspotify-muter-macos-latest.tar.gz.sha256
+
+      - name: Upload latest build artifact
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wuspotify-muter-macos-latest
+          path: |
+            dist/wuspotify-muter-macos-latest.tar.gz
+            dist/wuspotify-muter-macos-latest.tar.gz.sha256
+          retention-days: 30

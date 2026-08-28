@@ -1,0 +1,10 @@
+[package]
+name = "wuspotify-muter"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight macOS CLI tool to detect and mute Spotify advertisements"
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+ctrlc = { version = "3.4", default-features = false }
