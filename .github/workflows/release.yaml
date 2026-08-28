@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check code formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Build target binaries
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Create universal binary and package archives
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          echo "Building packages for tag $TAG_NAME (version $VERSION)..."
+
+          mkdir -p dist/arm64 dist/x86_64 dist/universal dist/release_assets
+
+          # Copy individual architecture binaries
+          cp target/aarch64-apple-darwin/release/wuspotify-muter dist/arm64/
+          cp target/x86_64-apple-darwin/release/wuspotify-muter dist/x86_64/
+
+          # Combine into a Universal macOS binary via lipo
+          lipo -create \
+            -output dist/universal/wuspotify-muter \
+            dist/arm64/wuspotify-muter \
+            dist/x86_64/wuspotify-muter
+
+          # Create tar.gz archives
+          tar -czf "dist/release_assets/wuspotify-muter-${TAG_NAME}-macos-arm64.tar.gz" -C dist/arm64 wuspotify-muter
+          tar -czf "dist/release_assets/wuspotify-muter-${TAG_NAME}-macos-x86_64.tar.gz" -C dist/x86_64 wuspotify-muter
+          tar -czf "dist/release_assets/wuspotify-muter-${TAG_NAME}-macos-universal.tar.gz" -C dist/universal wuspotify-muter
+
+          # Generate SHA256 checksums
+          cd dist/release_assets
+          for file in *.tar.gz; do
+            shasum -a 256 "$file" > "${file}.sha256"
+          done
+          shasum -a 256 *.tar.gz > SHA256SUMS.txt
+
+      - name: Prepare Release Notes
+        id: release_notes
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          echo "title=Release ${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Render template from .github/RELEASE_TEMPLATE.md
+          sed "s/TAG_NAME/${TAG_NAME}/g" .github/RELEASE_TEMPLATE.md > dist/release_body.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.release_notes.outputs.title }}
+          body_path: dist/release_body.md
+          files: dist/release_assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
